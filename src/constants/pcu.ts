@@ -9,6 +9,7 @@ export const DEFAULT_PCU_WEIGHTS: Record<VehicleType, number> = {
   lorry: 3.0,
   motorcycle: 0.5,
   ambulance: 1.0,
+  fire_engine: 1.0,
   vip: 1.0,
 };
 
@@ -20,6 +21,7 @@ export const PCU_DESCRIPTIONS: Record<VehicleType, string> = {
   lorry: 'Heavy Goods Truck (3.0 PCU)',
   motorcycle: 'Two-Wheeler Motorbike / Scooter (0.5 PCU)',
   ambulance: 'Priority Emergency Unit (1.0 PCU)',
+  fire_engine: 'Fire Fighter Emergency Response Unit (1.0 PCU)',
   vip: 'Priority Escort Convoy (1.0 PCU)',
 };
 

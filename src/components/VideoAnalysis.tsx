@@ -34,6 +34,7 @@ export const VideoAnalysis: React.FC = () => {
     lorry: 1,
     motorcycle: 18,
     ambulance: 0,
+    fire_engine: 0,
     vip: 0,
   });
 

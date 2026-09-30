@@ -10,7 +10,12 @@ import {
   Sliders,
   CheckCircle2,
   AlertOctagon,
-  ArrowRight
+  ArrowRight,
+  Flame,
+  Ban,
+  Navigation2,
+  Gauge,
+  ShieldAlert
 } from 'lucide-react';
 import { 
   Vehicle, 
@@ -19,20 +24,22 @@ import {
   LightState, 
   VehicleType, 
   LaneStats,
-  TrafficEvent
+  TrafficEvent,
+  TrafficAlert
 } from '../types/traffic';
-import { DEFAULT_PCU_WEIGHTS, DEFAULT_YELLOW_SECONDS, DEFAULT_ALL_RED_SECONDS, PEDESTRIAN_WALK_SECONDS, PEDESTRIAN_CLEARANCE_SECONDS } from '../constants/pcu';
+import { DEFAULT_PCU_WEIGHTS, DEFAULT_YELLOW_SECONDS, DEFAULT_ALL_RED_SECONDS } from '../constants/pcu';
 
 interface JunctionViewProps {
   laneStats: LaneStats[];
   onStatsUpdate: (stats: LaneStats[], activeRule: string) => void;
   onEventGenerated: (event: TrafficEvent) => void;
+  onAlertGenerated: (alert: Omit<TrafficAlert, 'id' | 'timestamp' | 'acknowledged'>) => void;
   pcuWeights: Record<VehicleType, number>;
-  onEmergencyDetected: (lane: SignalPhase) => void;
+  onEmergencyDetected: (lane: SignalPhase, type: 'ambulance' | 'fire_engine' | 'vip' | 'blocked') => void;
   onEmergencyCleared: () => void;
 }
 
-// Indian plate prefixes for simulation
+// Indian state registration codes
 const INDIAN_STATES = ['AP', 'TS', 'KA', 'MH', 'DL', 'TN'];
 const INDIAN_SERIES = ['CQ', 'EH', 'BD', 'FA', 'TK', 'AB', 'MH'];
 
@@ -48,6 +55,7 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
   laneStats,
   onStatsUpdate,
   onEventGenerated,
+  onAlertGenerated,
   pcuWeights,
   onEmergencyDetected,
   onEmergencyCleared,
@@ -59,17 +67,15 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
   const [simSpeed, setSimSpeed] = useState<number>(1); // 1x, 2x, 4x
   const [trafficDensity, setTrafficDensity] = useState<number>(50); // 10 to 100
   const [showBoundingBoxes, setShowBoundingBoxes] = useState<boolean>(true);
-  const [activeRule, setActiveRule] = useState<string>('Webster Adaptive Coordination (IRC-SP-41)');
-  const [manualOverridePhase, setManualOverridePhase] = useState<SignalPhase | null>(null);
+  const [activeRule, setActiveRule] = useState<string>('Indian LHT Rules & Webster Adaptive (IRC-SP-41)');
 
-  // Phase controller refs (to avoid closure capture in requestAnimationFrame loop)
+  // Phase controller refs
   const phaseOrder: SignalPhase[] = ['A', 'B', 'C', 'D'];
   const currentPhaseIndexRef = useRef<number>(0);
   const lightStateRef = useRef<LightState>('GREEN');
-  const phaseTimerRef = useRef<number>(24); // remaining seconds in phase
-  const isPedestrianWalkRef = useRef<boolean>(false);
+  const phaseTimerRef = useRef<number>(24);
   const emergencyTargetLaneRef = useRef<SignalPhase | null>(null);
-  const vipTargetLaneRef = useRef<SignalPhase | null>(null);
+  const emergencyTypeRef = useRef<'ambulance' | 'fire_engine' | 'vip' | null>(null);
 
   // Entities
   const vehiclesRef = useRef<Vehicle[]>([]);
@@ -78,35 +84,32 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
   const lastSpawnTimeRef = useRef<number>(0);
   const lastSecondTickRef = useRef<number>(0);
 
-  // Measured lane stats accumulator
-  const laneStatsRef = useRef<Record<SignalPhase, {
-    queueLength: number;
-    totalPCU: number;
-    waitTimes: number[];
-    counts: Record<VehicleType, number>;
-  }>>({
-    A: { queueLength: 0, totalPCU: 0, waitTimes: [], counts: { car: 0, bus: 0, van: 0, auto: 0, lorry: 0, motorcycle: 0, ambulance: 0, vip: 0 } },
-    B: { queueLength: 0, totalPCU: 0, waitTimes: [], counts: { car: 0, bus: 0, van: 0, auto: 0, lorry: 0, motorcycle: 0, ambulance: 0, vip: 0 } },
-    C: { queueLength: 0, totalPCU: 0, waitTimes: [], counts: { car: 0, bus: 0, van: 0, auto: 0, lorry: 0, motorcycle: 0, ambulance: 0, vip: 0 } },
-    D: { queueLength: 0, totalPCU: 0, waitTimes: [], counts: { car: 0, bus: 0, van: 0, auto: 0, lorry: 0, motorcycle: 0, ambulance: 0, vip: 0 } },
-  });
-
-  // Spawn vehicle helper
-  const spawnVehicle = (forcedType?: VehicleType, forcedLane?: SignalPhase) => {
+  /**
+   * Spawns a vehicle adhering strictly to Indian Left-Hand Traffic (LHT):
+   * Lane A (North): heading South (+y), driver's LEFT is x = 325 (East half)
+   * Lane B (East): heading West (-x), driver's LEFT is y = 325 (South half)
+   * Lane C (South): heading North (-y), driver's LEFT is x = 275 (West half)
+   * Lane D (West): heading East (+x), driver's LEFT is y = 275 (North half)
+   */
+  const spawnVehicle = (
+    forcedType?: VehicleType, 
+    forcedLane?: SignalPhase, 
+    violationType?: 'signal_jump' | 'wrong_route' | 'overspeeding'
+  ) => {
     const lanes: SignalPhase[] = ['A', 'B', 'C', 'D'];
     const originLane = forcedLane || lanes[Math.floor(Math.random() * lanes.length)];
     
-    // Pick vehicle type based on Indian urban traffic distribution
+    // Pick vehicle type
     let type: VehicleType = 'car';
     if (forcedType) {
       type = forcedType;
     } else {
       const r = Math.random();
       if (r < 0.35) type = 'motorcycle';
-      else if (r < 0.60) type = 'car';
-      else if (r < 0.75) type = 'auto';
-      else if (r < 0.85) type = 'bus';
-      else if (r < 0.95) type = 'van';
+      else if (r < 0.58) type = 'car';
+      else if (r < 0.72) type = 'auto';
+      else if (r < 0.83) type = 'bus';
+      else if (r < 0.94) type = 'van';
       else type = 'lorry';
     }
 
@@ -114,70 +117,83 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
     const plate = generateSamplePlate();
     const pcu = pcuWeights[type] || 1.0;
 
-    // Dimensions based on type
+    // Dimensions & colors
     let length = 32;
     let width = 16;
     let color = '#38bdf8'; // car blue
 
     if (type === 'bus') {
-      length = 58; width = 20; color = '#f97316'; // orange transport bus
+      length = 58; width = 20; color = '#f97316'; // orange public transport bus
     } else if (type === 'lorry') {
-      length = 62; width = 22; color = '#ca8a04'; // yellow/brown truck
+      length = 62; width = 22; color = '#ca8a04'; // yellow/brown goods carrier
     } else if (type === 'van') {
-      length = 38; width = 18; color = '#94a3b8'; // grey van
+      length = 38; width = 18; color = '#94a3b8'; // grey delivery van
     } else if (type === 'auto') {
       length = 22; width = 14; color = '#eab308'; // auto rickshaw yellow/green
     } else if (type === 'motorcycle') {
       length = 16; width = 8; color = '#a855f7'; // two-wheeler
     } else if (type === 'ambulance') {
-      length = 42; width = 19; color = '#ef4444'; // white/red ambulance
+      length = 42; width = 19; color = '#ffffff'; // white ambulance with red stripe
+    } else if (type === 'fire_engine') {
+      length = 60; width = 22; color = '#dc2626'; // bright emergency fire red
     } else if (type === 'vip') {
-      length = 36; width = 17; color = '#0f172a'; // black VIP sedan
+      length = 36; width = 17; color = '#020617'; // executive black VIP sedan
     }
 
-    // Pick a destination lane different from origin
-    const possibleTargets = lanes.filter((l) => l !== originLane);
-    const targetLane = possibleTargets[Math.floor(Math.random() * possibleTargets.length)];
-
-    // Initial position based on origin lane (canvas coordinates: center is 300, 300)
-    // Lane A = North approach (coming from top y=0 to y=230)
-    // Lane B = East approach (coming from right x=600 to x=370)
-    // Lane C = South approach (coming from bottom y=600 to y=370)
-    // Lane D = West approach (coming from left x=0 to x=230)
+    // INDIAN LEFT-HAND TRAFFIC (LHT) LANE COORDINATES
     let x = 0, y = 0;
     const offset = (Math.random() - 0.5) * 6; // slight lane jitter
 
+    // If simulating wrong_route, deliberately place vehicle on opposite right side!
+    const isWrongRoute = violationType === 'wrong_route';
+
     if (originLane === 'A') {
-      x = 278 + offset;
+      // Heading South: Left is East (x = 325)
+      x = (isWrongRoute ? 265 : 325) + offset;
       y = -length - 10;
     } else if (originLane === 'B') {
+      // Heading West: Left is South (y = 325)
       x = 600 + length + 10;
-      y = 278 + offset;
+      y = (isWrongRoute ? 265 : 325) + offset;
     } else if (originLane === 'C') {
-      x = 322 + offset;
+      // Heading North: Left is West (x = 265)
+      x = (isWrongRoute ? 325 : 265) + offset;
       y = 600 + length + 10;
     } else if (originLane === 'D') {
+      // Heading East: Left is North (y = 265)
       x = -length - 10;
-      y = 322 + offset;
+      y = (isWrongRoute ? 325 : 265) + offset;
     }
+
+    const isOverspeeding = violationType === 'overspeeding';
+    const isSignalJump = violationType === 'signal_jump';
+
+    // Speed in pixels/frame
+    const baseSpeed = isOverspeeding ? 4.8 : 2.2 + Math.random() * 0.6;
 
     const newVehicle: Vehicle = {
       id,
       type,
       lane: originLane,
-      targetLane,
+      targetLane: 'A',
       turnDirection: 'straight',
       x,
       y,
-      speed: 2.2 + Math.random() * 0.8,
-      targetSpeed: 2.5,
+      speed: baseSpeed,
+      targetSpeed: isOverspeeding ? 5.2 : 2.5,
       length,
       width,
       color,
       plate,
-      isEmergency: type === 'ambulance',
+      isEmergency: type === 'ambulance' || type === 'fire_engine',
+      isFireEngine: type === 'fire_engine',
       isVip: type === 'vip',
-      isBlacklisted: type === 'car' && Math.random() < 0.05, // 5% sample blacklist for alert demo
+      isGovtVehicle: type === 'vip',
+      isBlacklisted: type === 'car' && Math.random() < 0.04,
+      isSignalJump,
+      isWrongRoute,
+      isOverspeeding,
+      violationLogged: false,
       waitTime: 0,
       passedStopLine: false,
       progress: 0,
@@ -186,14 +202,58 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
 
     vehiclesRef.current.push(newVehicle);
 
-    // Track emergency in lane
-    if (type === 'ambulance') {
+    // Track emergency preemption
+    if (type === 'fire_engine') {
       emergencyTargetLaneRef.current = originLane;
-      onEmergencyDetected(originLane);
-      setActiveRule(`EMERGENCY VEHICLE IN LANE ${originLane} - PREEMPTION CLEARANCE`);
+      emergencyTypeRef.current = 'fire_engine';
+      onEmergencyDetected(originLane, 'fire_engine');
+      setActiveRule(`FIRE FIGHTER IN LANE ${originLane} - IMMEDIATE PREEMPTION GREEN`);
+      onAlertGenerated({
+        type: 'fire_engine',
+        severity: 'critical',
+        title: `Fire Fighter Emergency Priority: Lane ${originLane}`,
+        description: `Fire brigade emergency transit detected. Traffic signal preemption engaged for life safety.`,
+        cameraId: `CAM-JUNCTION-${originLane}`,
+        plate,
+      });
+    } else if (type === 'ambulance') {
+      emergencyTargetLaneRef.current = originLane;
+      emergencyTypeRef.current = 'ambulance';
+      onEmergencyDetected(originLane, 'ambulance');
+      setActiveRule(`AMBULANCE (108 EMS) IN LANE ${originLane} - GREEN CORRIDOR CLEARANCE`);
+      onAlertGenerated({
+        type: 'emergency',
+        severity: 'critical',
+        title: `Ambulance 108 Emergency: Lane ${originLane}`,
+        description: `Critical medical emergency corridor cleared under IRC priority standard.`,
+        cameraId: `CAM-JUNCTION-${originLane}`,
+        plate,
+      });
     } else if (type === 'vip') {
-      vipTargetLaneRef.current = originLane;
-      setActiveRule(`VIP CONVOY IN LANE ${originLane} - PRIORITY DISPATCH`);
+      onEmergencyDetected(originLane, 'vip');
+      setActiveRule(`GOVERNMENT / VIP ESCORT IN LANE ${originLane} - PROTOCOL CLEARANCE`);
+      onAlertGenerated({
+        type: 'vip',
+        severity: 'high',
+        title: `Government / VIP Escort Convoy: Lane ${originLane}`,
+        description: `State protocol security convoy verified. Coordinated signal wave active.`,
+        cameraId: `CAM-JUNCTION-${originLane}`,
+        plate,
+      });
+    }
+
+    // If spawned as wrong route, immediately flag violation
+    if (isWrongRoute) {
+      onAlertGenerated({
+        type: 'wrong_route',
+        severity: 'critical',
+        title: `Wrong Route / Opposite Driving: ${plate}`,
+        description: `Vehicle observed moving on wrong side opposing Indian Keep-Left rules (MV Act Sec 177/184 - Interception Dispatched).`,
+        cameraId: `CAM-JUNCTION-${originLane}`,
+        plate,
+        mvActSection: 'MV Act Sec 177 / 184',
+        fineAmount: 1000,
+      });
     }
 
     // Emit initial detection event
@@ -217,22 +277,14 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
     const id = `PED-${Date.now()}-${Math.floor(Math.random() * 100)}`;
     let startX = 0, startY = 0, targetX = 0, targetY = 0;
 
-    // Crossing A is North zebra (y=210, x from 220 to 380)
-    // Crossing B is East zebra (x=390, y from 220 to 380)
-    // Crossing C is South zebra (y=390, x from 220 to 380)
-    // Crossing D is West zebra (x=210, y from 220 to 380)
     if (crossing === 'A') {
-      startX = 215; startY = 210;
-      targetX = 385; targetY = 210;
+      startX = 215; startY = 210; targetX = 385; targetY = 210;
     } else if (crossing === 'B') {
-      startX = 390; startY = 215;
-      targetX = 390; targetY = 385;
+      startX = 390; startY = 215; targetX = 390; targetY = 385;
     } else if (crossing === 'C') {
-      startX = 385; startY = 390;
-      targetX = 215; targetY = 390;
+      startX = 385; startY = 390; targetX = 215; targetY = 390;
     } else {
-      startX = 210; startY = 385;
-      targetX = 210; targetY = 215;
+      startX = 210; startY = 385; targetX = 210; targetY = 215;
     }
 
     pedestriansRef.current.push({
@@ -272,17 +324,14 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
         const timePassed = dt * effectiveSpeed;
         phaseTimerRef.current -= timePassed;
 
-        // Check if current phase expired
         if (phaseTimerRef.current <= 0) {
           const currentPhase = phaseOrder[currentPhaseIndexRef.current];
 
           if (lightStateRef.current === 'GREEN') {
-            // GREEN -> YELLOW (3 seconds)
             lightStateRef.current = 'YELLOW';
             phaseTimerRef.current = DEFAULT_YELLOW_SECONDS;
-            setActiveRule(`Phase ${currentPhase} Change: 3s Yellow Clearance`);
+            setActiveRule(`Phase ${currentPhase} Change: 3s Amber Clearance`);
           } else if (lightStateRef.current === 'YELLOW') {
-            // YELLOW -> ALL-RED (2 seconds safe junction clearance)
             lightStateRef.current = 'ALL_RED';
             phaseTimerRef.current = DEFAULT_ALL_RED_SECONDS;
             setActiveRule('All-Red Junction Clearance: Zero Conflict Clearance');
@@ -292,24 +341,21 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
               const emgLane = emergencyTargetLaneRef.current;
               currentPhaseIndexRef.current = phaseOrder.indexOf(emgLane);
               lightStateRef.current = 'GREEN';
-              phaseTimerRef.current = 15; // hold green for ambulance
-              setActiveRule(`Emergency Priority: Lane ${emgLane} Green Active`);
+              phaseTimerRef.current = 16; // hold green for emergency
+              setActiveRule(`${emergencyTypeRef.current === 'fire_engine' ? 'Fire Fighter' : 'Ambulance'} Preemption: Lane ${emgLane} Green Active`);
             } else {
-              // ALL-RED -> Check Pedestrian Phase or Next Phase
               // Advance to next phase
               let nextIndex = (currentPhaseIndexRef.current + 1) % 4;
               currentPhaseIndexRef.current = nextIndex;
               const nextPhase = phaseOrder[nextIndex];
               
-              // Find allocated green for this lane from stats (Webster plan)
               const laneConfig = laneStats.find((l) => l.id === nextPhase);
-              const allocatedGreen = laneConfig ? laneConfig.allocatedGreen : 22;
+              const allocatedGreen = laneConfig ? laneConfig.allocatedGreen : 24;
 
               lightStateRef.current = 'GREEN';
               phaseTimerRef.current = allocatedGreen;
               setActiveRule(`Phase ${nextPhase} Green Active (${allocatedGreen}s Webster Plan)`);
 
-              // Periodically trigger a safe pedestrian walk on non-conflicting crossings
               if (Math.random() < 0.4) {
                 spawnPedestrian(nextPhase);
               }
@@ -317,7 +363,7 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
           }
         }
 
-        // Spawning logic based on traffic density
+        // Spawning logic
         if (now - lastSpawnTimeRef.current > (3200 / (trafficDensity / 25)) / effectiveSpeed) {
           spawnVehicle();
           lastSpawnTimeRef.current = now;
@@ -327,7 +373,6 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
         if (now - lastSecondTickRef.current > 1000) {
           lastSecondTickRef.current = now;
 
-          // Compute queue lengths and wait times
           const updatedStats = laneStats.map((lane) => {
             const laneVehicles = vehiclesRef.current.filter((v) => v.lane === lane.id);
             const queuedVehicles = laneVehicles.filter((v) => !v.passedStopLine && v.speed < 0.5);
@@ -337,7 +382,7 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
               : 0;
 
             const counts: Record<VehicleType, number> = {
-              car: 0, bus: 0, van: 0, auto: 0, lorry: 0, motorcycle: 0, ambulance: 0, vip: 0
+              car: 0, bus: 0, van: 0, auto: 0, lorry: 0, motorcycle: 0, ambulance: 0, fire_engine: 0, vip: 0
             };
             laneVehicles.forEach((v) => { counts[v.type] = (counts[v.type] || 0) + 1; });
 
@@ -360,26 +405,61 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
         }
       }
 
-      // 2. VEHICLE PHYSICS & MOVEMENT
+      // 2. VEHICLE PHYSICS & MOVEMENT (INDIAN LHT KEEP LEFT)
       const activePhase = phaseOrder[currentPhaseIndexRef.current];
       const currentLight = lightStateRef.current;
 
       vehiclesRef.current.forEach((veh, index) => {
         if (!isRunning) return;
 
-        // Stop line coordinates
-        // Lane A (North, moving down): stop line at y = 200
-        // Lane B (East, moving left): stop line at x = 400
-        // Lane C (South, moving up): stop line at y = 400
-        // Lane D (West, moving right): stop line at x = 200
+        // Stop line coordinates:
+        // Lane A (North, heading South): stop line at y = 200
+        // Lane B (East, heading West): stop line at x = 400
+        // Lane C (South, heading North): stop line at y = 400
+        // Lane D (West, heading East): stop line at x = 200
         let distToStopLine = 999;
         if (veh.lane === 'A') distToStopLine = 200 - (veh.y + veh.length);
         else if (veh.lane === 'B') distToStopLine = veh.x - 400;
         else if (veh.lane === 'C') distToStopLine = veh.y - 400;
         else if (veh.lane === 'D') distToStopLine = 200 - (veh.x + veh.length);
 
-        if (distToStopLine < -10) {
+        // Check if passed stop line
+        if (distToStopLine < -8 && !veh.passedStopLine) {
           veh.passedStopLine = true;
+
+          // VIOLATION CHECK: SIGNAL JUMPING (RED LIGHT VIOLATION)
+          const isRed = veh.lane !== activePhase || currentLight === 'RED' || currentLight === 'ALL_RED';
+          if (isRed && !veh.isEmergency && !veh.violationLogged) {
+            veh.isSignalJump = true;
+            veh.violationLogged = true;
+            onAlertGenerated({
+              type: 'signal_jumping',
+              severity: 'critical',
+              title: `Signal Jumping Violation: ${veh.plate}`,
+              description: `Vehicle jumped red light at Lane ${veh.lane} stop line (MV Act Sec 119/177 - Automated e-Challan ₹1,000 issued).`,
+              cameraId: `CAM-JUNCTION-${veh.lane}`,
+              plate: veh.plate,
+              mvActSection: 'MV Act Sec 119/177',
+              fineAmount: 1000,
+            });
+          }
+        }
+
+        // VIOLATION CHECK: OVER-SPEEDING (SPEED LIMIT CROSSING)
+        const currentSpeedKmh = Math.round(veh.speed * 15);
+        if (currentSpeedKmh > 55 && !veh.isEmergency && !veh.violationLogged) {
+          veh.isOverspeeding = true;
+          veh.violationLogged = true;
+          onAlertGenerated({
+            type: 'overspeeding',
+            severity: 'high',
+            title: `Speed Limit Violation: ${veh.plate}`,
+            description: `Vehicle clocked at ${currentSpeedKmh} km/h exceeding 40 km/h urban junction speed limit (MV Act Sec 112/183 - e-Challan ₹2,000 issued).`,
+            cameraId: `CAM-JUNCTION-${veh.lane}`,
+            plate: veh.plate,
+            mvActSection: 'MV Act Sec 112/183',
+            fineAmount: 2000,
+          });
         }
 
         // Distance to vehicle ahead in same lane
@@ -398,7 +478,7 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
           }
         }
 
-        // Check if pedestrians are occupying the zebra crossing
+        // Check if pedestrians are occupying zebra
         let zebraOccupied = false;
         const crossingPedestrians = pedestriansRef.current.filter(
           (p) => p.crossing === veh.lane && p.state === 'crossing'
@@ -407,16 +487,16 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
           zebraOccupied = true;
         }
 
-        // Signal rule: Stop if Red/Yellow and hasn't passed stop line, or if vehicle ahead is too close, or zebra is occupied
+        // Stop rule (unless intentionally forced to signal jump)
         const isRedForMe = veh.lane !== activePhase || currentLight !== 'GREEN';
-        const mustStopForSignal = !veh.passedStopLine && isRedForMe && distToStopLine > -5 && distToStopLine < 120;
+        const mustStopForSignal = !veh.passedStopLine && isRedForMe && !veh.isSignalJump && distToStopLine > -5 && distToStopLine < 120;
         const mustStopForVehicleAhead = distToAhead < 20;
 
         if (mustStopForSignal || mustStopForVehicleAhead || zebraOccupied) {
-          veh.speed = Math.max(0, veh.speed - 0.15 * effectiveSpeed);
+          veh.speed = Math.max(0, veh.speed - 0.16 * effectiveSpeed);
           veh.waitTime += (dt * effectiveSpeed);
         } else {
-          veh.speed = Math.min(veh.targetSpeed, veh.speed + 0.1 * effectiveSpeed);
+          veh.speed = Math.min(veh.targetSpeed, veh.speed + 0.12 * effectiveSpeed);
         }
 
         // Advance position
@@ -426,22 +506,22 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
         else if (veh.lane === 'C') veh.y -= moveStep;
         else if (veh.lane === 'D') veh.x += moveStep;
 
-        // Check ambulance exit
+        // Check emergency exit
         if (veh.isEmergency && veh.passedStopLine && (veh.y > 450 || veh.x < 150 || veh.y < 150 || veh.x > 450)) {
           emergencyTargetLaneRef.current = null;
+          emergencyTypeRef.current = null;
           onEmergencyCleared();
         }
       });
 
-      // Remove vehicles that left the junction view
+      // Cleanup exited vehicles
       vehiclesRef.current = vehiclesRef.current.filter((v) => {
-        return v.x >= -100 && v.x <= 700 && v.y >= -100 && v.y <= 700;
+        return v.x >= -120 && v.x <= 720 && v.y >= -120 && v.y <= 720;
       });
 
       // 3. PEDESTRIAN MOVEMENT
       pedestriansRef.current.forEach((ped) => {
         if (!isRunning) return;
-        // Pedestrians only cross when their zebra crossing's corresponding lane is RED
         const isLaneRed = activePhase !== ped.crossing || currentLight !== 'GREEN';
         if (isLaneRed && ped.state === 'waiting') {
           ped.state = 'crossing';
@@ -462,24 +542,24 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
 
       pedestriansRef.current = pedestriansRef.current.filter((p) => p.state !== 'cleared');
 
-      // 4. DRAW JUNCTION CANVAS
+      // 4. DRAW JUNCTION CANVAS (INDIAN LHT KEEP LEFT GEOMETRY)
       ctx.clearRect(0, 0, 600, 600);
 
-      // Background grass/pavement
-      ctx.fillStyle = '#0f172a'; // slate-900 background
+      // Background
+      ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, 600, 600);
 
-      // Curbs & Sidewalks (Slate-800)
+      // Sidewalks
       ctx.fillStyle = '#1e293b';
-      ctx.fillRect(0, 0, 200, 200); // Top Left
-      ctx.fillRect(400, 0, 200, 200); // Top Right
-      ctx.fillRect(0, 400, 200, 200); // Bottom Left
-      ctx.fillRect(400, 400, 200, 200); // Bottom Right
+      ctx.fillRect(0, 0, 200, 200);
+      ctx.fillRect(400, 0, 200, 200);
+      ctx.fillRect(0, 400, 200, 200);
+      ctx.fillRect(400, 400, 200, 200);
 
-      // Road Asphalt (Dark realistic asphalt #1a202c)
+      // Road Asphalt
       ctx.fillStyle = '#131b26';
-      ctx.fillRect(200, 0, 200, 600); // North-South Road
-      ctx.fillRect(0, 200, 600, 200); // East-West Road
+      ctx.fillRect(200, 0, 200, 600); // North-South
+      ctx.fillRect(0, 200, 600, 200); // East-West
 
       // Road boundary borders
       ctx.strokeStyle = '#334155';
@@ -487,8 +567,8 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
       ctx.strokeRect(200, 0, 200, 600);
       ctx.strokeRect(0, 200, 600, 200);
 
-      // Yellow Center Dividers (Double Yellow Lines)
-      ctx.strokeStyle = '#eab308'; // Amber-yellow
+      // Yellow Center Dividers (Double Yellow Lines at center 300)
+      ctx.strokeStyle = '#eab308';
       ctx.lineWidth = 2;
       ctx.setLineDash([]);
       
@@ -516,59 +596,47 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
       ctx.moveTo(410, 302); ctx.lineTo(600, 302);
       ctx.stroke();
 
-      // White Stop Lines
+      // INDIAN LEFT-HAND TRAFFIC STOP LINES (Across Inbound Left-Hand Approach Lanes Only!)
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 4;
       ctx.setLineDash([]);
 
-      // Lane A (North) Stop Line
+      // Lane A (North approach, inbound is East half x=300 to 400)
       ctx.beginPath();
-      ctx.moveTo(200, 200); ctx.lineTo(300, 200);
+      ctx.moveTo(300, 200); ctx.lineTo(400, 200);
       ctx.stroke();
 
-      // Lane B (East) Stop Line
+      // Lane B (East approach, inbound is South half y=300 to 400)
       ctx.beginPath();
-      ctx.moveTo(400, 200); ctx.lineTo(400, 300);
+      ctx.moveTo(400, 300); ctx.lineTo(400, 400);
       ctx.stroke();
 
-      // Lane C (South) Stop Line
+      // Lane C (South approach, inbound is West half x=200 to 300)
       ctx.beginPath();
-      ctx.moveTo(300, 400); ctx.lineTo(400, 400);
+      ctx.moveTo(200, 400); ctx.lineTo(300, 400);
       ctx.stroke();
 
-      // Lane D (West) Stop Line
+      // Lane D (West approach, inbound is North half y=200 to 300)
       ctx.beginPath();
-      ctx.moveTo(200, 300); ctx.lineTo(200, 400);
+      ctx.moveTo(200, 200); ctx.lineTo(200, 300);
       ctx.stroke();
 
-      // Zebra Crossings (Realistic white stripes)
+      // Zebra Crossings
       ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
-      // North Zebra (between y=205 and 225)
-      for (let x = 205; x < 395; x += 18) {
-        ctx.fillRect(x, 205, 10, 16);
-      }
-      // South Zebra (between y=375 and 395)
-      for (let x = 205; x < 395; x += 18) {
-        ctx.fillRect(x, 379, 10, 16);
-      }
-      // West Zebra (between x=205 and 225)
-      for (let y = 205; y < 395; y += 18) {
-        ctx.fillRect(205, y, 16, 10);
-      }
-      // East Zebra (between x=375 and 395)
-      for (let y = 205; y < 395; y += 18) {
-        ctx.fillRect(379, y, 16, 10);
-      }
+      for (let x = 205; x < 395; x += 18) ctx.fillRect(x, 205, 10, 16);
+      for (let x = 205; x < 395; x += 18) ctx.fillRect(x, 379, 10, 16);
+      for (let y = 205; y < 395; y += 18) ctx.fillRect(205, y, 16, 10);
+      for (let y = 205; y < 395; y += 18) ctx.fillRect(379, y, 16, 10);
 
-      // Lane Label Badges on Canvas
-      ctx.font = 'bold 11px monospace';
-      ctx.fillStyle = '#64748b';
-      ctx.fillText('LANE A (NORTH)', 205, 25);
-      ctx.fillText('LANE B (EAST)', 505, 285);
-      ctx.fillText('LANE C (SOUTH)', 305, 585);
-      ctx.fillText('LANE D (WEST)', 15, 315);
+      // Asphalt Stencils & Arrows for Indian Left-Hand Driving
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText('KEEP LEFT ⬇', 320, 120);
+      ctx.fillText('⬆ KEEP LEFT', 225, 480);
+      ctx.fillText('KEEP LEFT ⬅', 480, 350);
+      ctx.fillText('KEEP LEFT ➡', 60, 250);
 
-      // Signal Light Heads on Corner Curbs
+      // Signal Light Heads
       const drawTrafficLight = (x: number, y: number, phase: SignalPhase) => {
         const isCurrentPhase = activePhase === phase;
         let colorRed = '#450a0a';
@@ -583,14 +651,12 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
           colorRed = '#ef4444';
         }
 
-        // Housing
         ctx.fillStyle = '#020617';
         ctx.strokeStyle = '#475569';
         ctx.lineWidth = 1.5;
         ctx.fillRect(x - 8, y - 22, 16, 44);
         ctx.strokeRect(x - 8, y - 22, 16, 44);
 
-        // Bulbs
         ctx.fillStyle = colorRed;
         ctx.beginPath(); ctx.arc(x, y - 13, 5, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = colorYellow;
@@ -599,11 +665,11 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
         ctx.beginPath(); ctx.arc(x, y + 13, 5, 0, Math.PI * 2); ctx.fill();
       };
 
-      // Draw light heads at appropriate corners facing drivers
-      drawTrafficLight(190, 185, 'A'); // For Lane A
-      drawTrafficLight(415, 190, 'B'); // For Lane B
-      drawTrafficLight(415, 415, 'C'); // For Lane C
-      drawTrafficLight(185, 415, 'D'); // For Lane D
+      // Place light heads facing incoming drivers
+      drawTrafficLight(415, 185, 'A'); // Facing Lane A (inbound on East half)
+      drawTrafficLight(415, 415, 'B'); // Facing Lane B (inbound on South half)
+      drawTrafficLight(185, 415, 'C'); // Facing Lane C (inbound on West half)
+      drawTrafficLight(185, 185, 'D'); // Facing Lane D (inbound on North half)
 
       // DRAW PEDESTRIANS
       pedestriansRef.current.forEach((ped) => {
@@ -619,19 +685,20 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
       // DRAW VEHICLES
       vehiclesRef.current.forEach((veh) => {
         ctx.save();
-        ctx.translate(veh.x + (veh.lane === 'A' || veh.lane === 'C' ? veh.width / 2 : veh.length / 2), 
-                      veh.y + (veh.lane === 'A' || veh.lane === 'C' ? veh.length / 2 : veh.width / 2));
+        ctx.translate(
+          veh.x + (veh.lane === 'A' || veh.lane === 'C' ? veh.width / 2 : veh.length / 2), 
+          veh.y + (veh.lane === 'A' || veh.lane === 'C' ? veh.length / 2 : veh.width / 2)
+        );
 
-        // Heading angle based on lane
         let angle = 0;
-        if (veh.lane === 'A') angle = Math.PI / 2; // facing down
-        else if (veh.lane === 'B') angle = Math.PI; // facing left
-        else if (veh.lane === 'C') angle = -Math.PI / 2; // facing up
-        else if (veh.lane === 'D') angle = 0; // facing right
+        if (veh.lane === 'A') angle = Math.PI / 2; // South
+        else if (veh.lane === 'B') angle = Math.PI; // West
+        else if (veh.lane === 'C') angle = -Math.PI / 2; // North
+        else if (veh.lane === 'D') angle = 0; // East
 
         ctx.rotate(angle);
 
-        // Vehicle Body (Rectangular)
+        // Body
         ctx.fillStyle = veh.color;
         ctx.strokeStyle = '#0f172a';
         ctx.lineWidth = 1.5;
@@ -640,36 +707,82 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
         ctx.fillRect(-w / 2, -h / 2, w, h);
         ctx.strokeRect(-w / 2, -h / 2, w, h);
 
-        // Windshield
-        ctx.fillStyle = '#1e293b';
-        ctx.fillRect(w * 0.1, -h * 0.4, w * 0.25, h * 0.8);
-
-        // Headlights
-        ctx.fillStyle = '#fef08a';
-        ctx.fillRect(w * 0.45, -h * 0.45, 3, 4);
-        ctx.fillRect(w * 0.45, h * 0.45 - 4, 3, 4);
-
-        // Emergency Flashing Beacon for Ambulance
-        if (veh.isEmergency) {
-          const flash = Math.floor(now / 150) % 2 === 0;
+        // Fire engine ladder & cabin details
+        if (veh.type === 'fire_engine') {
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillRect(-w * 0.35, -h * 0.25, w * 0.6, h * 0.5);
+          ctx.strokeStyle = '#475569';
+          ctx.strokeRect(-w * 0.35, -h * 0.25, w * 0.6, h * 0.5);
+          // Dual flashing emergency beacons
+          const flash = Math.floor(now / 120) % 2 === 0;
           ctx.fillStyle = flash ? '#ef4444' : '#38bdf8';
-          ctx.beginPath();
-          ctx.arc(0, 0, 4.5, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.beginPath(); ctx.arc(w * 0.3, -h * 0.3, 3, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = flash ? '#38bdf8' : '#ef4444';
+          ctx.beginPath(); ctx.arc(w * 0.3, h * 0.3, 3, 0, Math.PI * 2); ctx.fill();
         }
 
-        // VIP Convoy Emblem
+        // Ambulance flashing beacon
+        if (veh.type === 'ambulance') {
+          // Red cross
+          ctx.fillStyle = '#ef4444';
+          ctx.fillRect(-4, -1.5, 8, 3);
+          ctx.fillRect(-1.5, -4, 3, 8);
+          // Flashing beacon
+          const flash = Math.floor(now / 150) % 2 === 0;
+          ctx.fillStyle = flash ? '#ef4444' : '#38bdf8';
+          ctx.beginPath(); ctx.arc(w * 0.25, 0, 4, 0, Math.PI * 2); ctx.fill();
+        }
+
+        // VIP Convoy flag
         if (veh.isVip) {
-          ctx.fillStyle = '#facc15';
-          ctx.fillRect(-3, -3, 6, 6);
+          ctx.fillStyle = '#f97316'; // Saffron
+          ctx.fillRect(w * 0.35, -h * 0.45, 4, 2);
+          ctx.fillStyle = '#ffffff'; // White
+          ctx.fillRect(w * 0.35, -h * 0.45 + 2, 4, 2);
+          ctx.fillStyle = '#16a34a'; // Green
+          ctx.fillRect(w * 0.35, -h * 0.45 + 4, 4, 2);
         }
 
         ctx.restore();
 
-        // Bounding Box & ANPR Label Overlay (YOLOv8 style)
+        // Bounding Box & Violations / ANPR Label
         if (showBoundingBoxes) {
-          ctx.strokeStyle = veh.isEmergency ? '#ef4444' : veh.isVip ? '#facc15' : '#38bdf8';
-          ctx.lineWidth = 1;
+          let boxStroke = '#38bdf8';
+          let tagColor = '#0284c7';
+          let tagText = `${veh.type.toUpperCase()} | ${veh.plate}`;
+
+          if (veh.isFireEngine) {
+            boxStroke = '#ef4444';
+            tagColor = '#dc2626';
+            tagText = `🔥 FIRE FIGHTER | ${veh.plate}`;
+          } else if (veh.type === 'ambulance') {
+            boxStroke = '#ef4444';
+            tagColor = '#dc2626';
+            tagText = `🚑 AMBULANCE 108 | ${veh.plate}`;
+          } else if (veh.isVip) {
+            boxStroke = '#facc15';
+            tagColor = '#b45309';
+            tagText = `👑 VIP CONVOY | ${veh.plate}`;
+          } else if (veh.isSignalJump) {
+            boxStroke = '#dc2626';
+            tagColor = '#991b1b';
+            tagText = `🚨 SIGNAL JUMP! ₹1,000 | ${veh.plate}`;
+          } else if (veh.isWrongRoute) {
+            boxStroke = '#f97316';
+            tagColor = '#c2410c';
+            tagText = `⛔ WRONG ROUTE! | ${veh.plate}`;
+          } else if (veh.isOverspeeding) {
+            boxStroke = '#eab308';
+            tagColor = '#854d0e';
+            tagText = `⚡ OVERSPEED ₹2,000 | ${veh.plate}`;
+          } else if (veh.isBlacklisted) {
+            boxStroke = '#e11d48';
+            tagColor = '#be123c';
+            tagText = `🛑 BLOCKED VEHICLE | ${veh.plate}`;
+          }
+
+          ctx.strokeStyle = boxStroke;
+          ctx.lineWidth = veh.isSignalJump || veh.isFireEngine ? 2 : 1;
           const boxX = veh.x - 2;
           const boxY = veh.y - 2;
           const boxW = (veh.lane === 'A' || veh.lane === 'C' ? veh.width : veh.length) + 4;
@@ -678,12 +791,13 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
           ctx.strokeRect(boxX, boxY, boxW, boxH);
 
           // Top label tag
-          ctx.fillStyle = veh.isEmergency ? '#ef4444' : '#0284c7';
-          ctx.fillRect(boxX, boxY - 14, Math.max(70, ctx.measureText(veh.plate).width + 8), 13);
-
           ctx.font = 'bold 9px monospace';
+          const textWidth = ctx.measureText(tagText).width;
+          ctx.fillStyle = tagColor;
+          ctx.fillRect(boxX, boxY - 14, Math.max(70, textWidth + 8), 13);
+
           ctx.fillStyle = '#ffffff';
-          ctx.fillText(`${veh.type.toUpperCase()} | ${veh.plate}`, boxX + 3, boxY - 4);
+          ctx.fillText(tagText, boxX + 4, boxY - 4);
         }
       });
 
@@ -692,7 +806,7 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
 
     animationFrameId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isRunning, simSpeed, trafficDensity, showBoundingBoxes, pcuWeights, laneStats, onStatsUpdate, onEventGenerated]);
+  }, [isRunning, simSpeed, trafficDensity, showBoundingBoxes, pcuWeights, laneStats, onStatsUpdate, onEventGenerated, onAlertGenerated]);
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-md p-3 flex flex-col space-y-3">
@@ -700,9 +814,9 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2 text-xs">
         <div className="flex items-center space-x-2">
           <span className="font-semibold text-slate-200">Live 4-Way Junction:</span>
-          <span className="text-slate-400">Benz Circle Central Model</span>
-          <span className="bg-emerald-950 text-emerald-400 border border-emerald-800 px-1.5 py-0.5 rounded font-mono text-[11px]">
-            60 FPS CANVAS
+          <span className="text-slate-400">Indian Left-Hand Drive (LHT)</span>
+          <span className="bg-blue-950 text-blue-300 border border-blue-800 px-1.5 py-0.5 rounded font-mono text-[11px]">
+            KEEP LEFT ACTIVE
           </span>
         </div>
 
@@ -745,7 +859,7 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
             title="Toggle YOLO Bounding Boxes & ANPR tags"
           >
             <Eye className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">Bounding Boxes</span>
+            <span className="hidden md:inline">Boxes</span>
           </button>
         </div>
       </div>
@@ -761,16 +875,16 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
 
         {/* Corner Indicator Badges */}
         <div className="absolute top-4 left-4 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[11px] text-slate-300">
-          Lane A: <span className="font-mono text-emerald-400">North</span>
+          Lane A: <span className="font-mono text-emerald-400">North (Keep Left)</span>
         </div>
         <div className="absolute top-4 right-4 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[11px] text-slate-300">
-          Lane B: <span className="font-mono text-emerald-400">East</span>
+          Lane B: <span className="font-mono text-emerald-400">East (Keep Left)</span>
         </div>
         <div className="absolute bottom-10 left-4 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[11px] text-slate-300">
-          Lane D: <span className="font-mono text-emerald-400">West</span>
+          Lane D: <span className="font-mono text-emerald-400">West (Keep Left)</span>
         </div>
         <div className="absolute bottom-10 right-4 bg-slate-900/90 border border-slate-800 px-2 py-1 rounded text-[11px] text-slate-300">
-          Lane C: <span className="font-mono text-emerald-400">South</span>
+          Lane C: <span className="font-mono text-emerald-400">South (Keep Left)</span>
         </div>
 
         {/* Bottom Rule Status Line */}
@@ -781,49 +895,93 @@ export const JunctionView: React.FC<JunctionViewProps> = ({
             <span className="text-blue-300 font-mono truncate">{activeRule}</span>
           </div>
           <span className="text-slate-400 hidden sm:inline text-[10px]">
-            IRC SP-41 / Webster Timing Active
+            Indian MV Act 1988/2019 Enforcement
           </span>
         </div>
       </div>
 
-      {/* Simulator Quick Action Buttons */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-        <button
-          onClick={() => spawnVehicle('ambulance', 'A')}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-800 rounded-sm text-xs font-semibold transition"
-        >
-          <Siren className="w-3.5 h-3.5 text-red-400" />
-          <span>Spawn Ambulance (Lane A)</span>
-        </button>
-
-        <button
-          onClick={() => spawnVehicle('vip', 'B')}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-950/80 hover:bg-amber-900 text-amber-200 border border-amber-800 rounded-sm text-xs font-semibold transition"
-        >
-          <Crown className="w-3.5 h-3.5 text-amber-400" />
-          <span>Spawn VIP Escort (Lane B)</span>
-        </button>
-
-        <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-sm">
-          <span className="text-xs text-slate-400 whitespace-nowrap">Density:</span>
-          <input
-            type="range"
-            min={20}
-            max={90}
-            value={trafficDensity}
-            onChange={(e) => setTrafficDensity(Number(e.target.value))}
-            className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-            title="Adjust traffic inflow rate"
-          />
-          <span className="text-xs font-mono text-slate-300">{trafficDensity}%</span>
+      {/* Indian Traffic Actions: Emergency / Govt Vehicles & Violation Triggers */}
+      <div className="space-y-2 pt-1 text-xs">
+        <div className="flex items-center justify-between text-slate-400 text-[11px]">
+          <span className="font-semibold text-slate-200">Government & Emergency Preemption:</span>
+          <span>Click to dispatch live vehicle into junction:</span>
         </div>
 
-        <button
-          onClick={() => spawnPedestrian('A')}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-sm text-xs font-medium transition"
-        >
-          <span>Request Zebra Walk</span>
-        </button>
+        {/* Emergency & Govt Buttons */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <button
+            onClick={() => spawnVehicle('fire_engine', 'A')}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-red-950 hover:bg-red-900 text-red-200 border border-red-700 rounded-sm font-semibold transition"
+            title="Dispatch Fire Fighter Emergency Engine (Preempts signal immediately)"
+          >
+            <Flame className="w-4 h-4 text-red-400" />
+            <span>Fire Fighter (Lane A)</span>
+          </button>
+
+          <button
+            onClick={() => spawnVehicle('ambulance', 'B')}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-950 hover:bg-rose-900 text-rose-200 border border-rose-700 rounded-sm font-semibold transition"
+            title="Dispatch 108 Emergency Ambulance (Green wave priority)"
+          >
+            <Siren className="w-4 h-4 text-rose-400" />
+            <span>Ambulance 108 (Lane B)</span>
+          </button>
+
+          <button
+            onClick={() => spawnVehicle('vip', 'C')}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-950 hover:bg-amber-900 text-amber-200 border border-amber-700 rounded-sm font-semibold transition"
+            title="Dispatch Government Protocol / VIP Escort Convoy"
+          >
+            <Crown className="w-4 h-4 text-amber-400" />
+            <span>VIP Govt Convoy (Lane C)</span>
+          </button>
+
+          <button
+            onClick={() => spawnVehicle('car', 'D', undefined)}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-purple-950 hover:bg-purple-900 text-purple-200 border border-purple-700 rounded-sm font-semibold transition"
+            title="Simulate Blocked / Stolen Vehicle on National Blacklist"
+          >
+            <ShieldAlert className="w-4 h-4 text-purple-400" />
+            <span>Blocked / Wanted Car</span>
+          </button>
+        </div>
+
+        {/* Indian Traffic Rule Violations Simulation Row */}
+        <div className="pt-1">
+          <div className="flex items-center justify-between text-slate-400 text-[11px] mb-1">
+            <span className="font-semibold text-slate-200">Simulate Indian Traffic Rule Violations:</span>
+            <span className="text-amber-400">Generates instant e-Challan & MV Act citation</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              onClick={() => spawnVehicle('car', 'A', 'signal_jump')}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-950 hover:bg-red-950/60 text-red-300 border border-slate-800 hover:border-red-800 rounded-sm font-medium transition"
+              title="Vehicle crosses stop line during RED signal (MV Act Sec 119/177)"
+            >
+              <Ban className="w-3.5 h-3.5 text-red-400" />
+              <span>Simulate Signal Jump (₹1,000)</span>
+            </button>
+
+            <button
+              onClick={() => spawnVehicle('auto', 'B', 'wrong_route')}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-950 hover:bg-orange-950/60 text-orange-300 border border-slate-800 hover:border-orange-800 rounded-sm font-medium transition"
+              title="Vehicle moves on the wrong side opposing Keep-Left rule (MV Act Sec 177/184)"
+            >
+              <Navigation2 className="w-3.5 h-3.5 text-orange-400 rotate-180" />
+              <span>Simulate Wrong Route (Sec 177)</span>
+            </button>
+
+            <button
+              onClick={() => spawnVehicle('motorcycle', 'C', 'overspeeding')}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-950 hover:bg-amber-950/60 text-amber-300 border border-slate-800 hover:border-amber-800 rounded-sm font-medium transition"
+              title="Vehicle exceeds junction speed limit (MV Act Sec 112/183)"
+            >
+              <Gauge className="w-3.5 h-3.5 text-amber-400" />
+              <span>Simulate Speeding (₹2,000)</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

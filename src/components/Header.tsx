@@ -26,7 +26,7 @@ interface HeaderProps {
   onStartTour: () => void;
   onExportCSV: () => void;
   onExportPDF: () => void;
-  emergencyActiveLane: string | null;
+  emergencyActiveLane: string | { lane: string; type: 'ambulance' | 'fire_engine' | 'vip' | 'blocked' } | null;
   activeRule: string;
 }
 
@@ -47,6 +47,19 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [currentTime, setCurrentTime] = React.useState<string>('');
   const t = TRANSLATIONS[language];
+
+  // Helper to extract emergency info
+  const emgInfo = React.useMemo(() => {
+    if (!emergencyActiveLane) return null;
+    if (typeof emergencyActiveLane === 'string') {
+      return { lane: emergencyActiveLane, type: 'ambulance' as const, label: `AMBULANCE LANE ${emergencyActiveLane}` };
+    }
+    const { lane, type } = emergencyActiveLane;
+    if (type === 'fire_engine') return { lane, type, label: `🔥 FIRE FIGHTER LANE ${lane}` };
+    if (type === 'vip') return { lane, type, label: `👑 VIP GOVT CONVOY LANE ${lane}` };
+    if (type === 'blocked') return { lane, type, label: `🛑 BLOCKED CAR IN LANE ${lane}` };
+    return { lane, type, label: `🚑 AMBULANCE LANE ${lane}` };
+  }, [emergencyActiveLane]);
 
   React.useEffect(() => {
     const updateTime = () => {
@@ -170,11 +183,19 @@ export const Header: React.FC<HeaderProps> = ({
             <HelpCircle className="w-4 h-4" />
           </button>
 
-          {/* Emergency Priority Badge (Fixed slot in header, does NOT cover panels) */}
-          {emergencyActiveLane ? (
-            <div className="flex items-center gap-1.5 bg-red-950 border border-red-600 text-red-200 text-xs px-2.5 py-1 rounded font-medium animate-pulse">
-              <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
-              <span>AMBULANCE LANE {emergencyActiveLane}</span>
+          {/* Emergency / Government Priority Badge (Fixed slot in header, does NOT cover panels) */}
+          {emgInfo ? (
+            <div className={`flex items-center gap-1.5 border px-2.5 py-1 rounded text-xs font-semibold animate-pulse ${
+              emgInfo.type === 'fire_engine'
+                ? 'bg-red-950 border-red-500 text-red-200'
+                : emgInfo.type === 'vip'
+                ? 'bg-amber-950 border-amber-500 text-amber-200'
+                : emgInfo.type === 'blocked'
+                ? 'bg-purple-950 border-purple-500 text-purple-200'
+                : 'bg-rose-950 border-rose-500 text-rose-200'
+            }`}>
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>{emgInfo.label}</span>
             </div>
           ) : (
             <div className="hidden lg:flex items-center gap-1.5 bg-slate-950 border border-slate-800 text-slate-400 text-xs px-2 py-1 rounded">

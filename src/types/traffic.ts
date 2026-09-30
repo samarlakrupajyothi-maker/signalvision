@@ -6,6 +6,7 @@ export type VehicleType =
   | 'lorry' 
   | 'motorcycle' 
   | 'ambulance' 
+  | 'fire_engine'
   | 'vip';
 
 export type SignalPhase = 'A' | 'B' | 'C' | 'D';
@@ -27,7 +28,13 @@ export interface Vehicle {
   plate: string;
   isBlacklisted?: boolean;
   isEmergency?: boolean;
+  isFireEngine?: boolean;
   isVip?: boolean;
+  isGovtVehicle?: boolean;
+  isSignalJump?: boolean;
+  isWrongRoute?: boolean;
+  isOverspeeding?: boolean;
+  violationLogged?: boolean;
   waitTime: number;
   passedStopLine: boolean;
   progress: number;
@@ -105,13 +112,25 @@ export interface TrajectoryPoint {
 
 export interface TrafficAlert {
   id: string;
-  type: 'blacklist' | 'route_anomaly' | 'emergency' | 'vip' | 'congestion';
+  type: 
+    | 'blacklist' 
+    | 'route_anomaly' 
+    | 'emergency' 
+    | 'vip' 
+    | 'fire_engine'
+    | 'govt_vehicle'
+    | 'signal_jumping' 
+    | 'wrong_route' 
+    | 'overspeeding' 
+    | 'congestion';
   severity: 'critical' | 'high' | 'medium' | 'info';
   title: string;
   description: string;
   timestamp: string;
   cameraId: string;
   plate?: string;
+  mvActSection?: string;
+  fineAmount?: number;
   acknowledged: boolean;
 }
 

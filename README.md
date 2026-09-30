@@ -27,7 +27,7 @@ Every screen directly answers a single question in plain language:
 
 | Mode | Target Deployment | Architecture & Processing | Network Inflow |
 | :--- | :--- | :--- | :--- |
-| **Mode A: Live 4-Way Simulation** | Public Evaluation / Training | High-fidelity 60 FPS HTML5 Canvas simulation with Indian vehicles (autos, lorries, buses, bikes, ambulances, VIP convoys), pedestrian zebra walk phases, and stop-line queue physics. | 100% Client-side browser execution |
+| **Mode A: Live 4-Way Simulation** | Public Evaluation / Training | High-fidelity 60 FPS HTML5 Canvas simulation adhering strictly to **Indian Left-Hand Traffic (LHT / Keep Left)** rules. Features Indian vehicles (auto-rickshaws, lorries, buses, bikes, ambulances, fire engines, VIP convoys), pedestrian zebra walk phases, and stop-line queue physics. | 100% Client-side browser execution |
 | **Mode B: Browser Video / Webcam** | Field Testing & Edge Verification | Client-side YOLOv8 inference running directly in browser memory via ONNX Runtime Web (WebGPU / WASM). Video is never uploaded to any server. Generates vehicle classifications and Webster cycle recommendations from video clips. | 0 KB upload (Privacy-first) |
 | **Mode C: Server Pipeline** | Enterprise Municipal Grid | Production RTSP ingestion, ByteTrack tracking, PaddleOCR, Redis Streams event bus, PostGIS trajectory storage, and FastAPI REST/WebSocket endpoints. | Scalable Edge-to-Cloud Stream |
 
@@ -35,7 +35,23 @@ All three modes stream and parse an identical JSON event message specification.
 
 ---
 
-## 3. End-to-End Technical Workflow Architecture
+## 3. Indian Traffic Rules Enforcement & Violation Alert Engine
+
+Signal Vision integrates automated enforcement aligned with the **Motor Vehicles (Amendment) Act 2019**:
+
+1. **Keep Left (Left-Hand Traffic - LHT):** All approaches require vehicles to travel strictly on the left half of the carriageway.
+2. **Signal Jumping (Red Light Violation - MV Act Sec 119/177):** Automated stop line sensor detects vehicles crossing the line on red, flagging the license plate and generating a ₹1,000 automated e-Challan.
+3. **Wrong Route / Counter-Flow Driving (MV Act Sec 177/184):** Identifies vehicles traveling on the right half or against the designated direction of flow.
+4. **Over-Speeding (Speed Limit Crossing - MV Act Sec 112/183):** Tracks vehicle displacement across calibrated camera coordinates; vehicles exceeding the 40 km/h urban threshold trigger a ₹2,000 automated e-Challan.
+5. **Government & Emergency Vehicle Priority:**
+   - **Fire Fighter (Emergency Priority):** Dedicated red fire engine with dual flashing strobes triggers immediate signal preemption (finishing active yellow -> 2s all-red -> immediate green corridor).
+   - **Ambulance (108 Emergency Medical Services):** High-priority green wave corridor clearance.
+   - **VIP Government Convoy:** Protocol security convoy flagged for coordinated escort clearance without cutting off pedestrians.
+   - **Blocked / Wanted Vehicles:** Real-time lookup against national VAHAN / CCTNS blacklist database for immediate PCR dispatch.
+
+---
+
+## 4. End-to-End Technical Workflow Architecture
 
 ```
 Camera / Video Stream (RTSP Stream, Local MP4 File, or Browser Webcam)
@@ -75,7 +91,7 @@ Camera / Video Stream (RTSP Stream, Local MP4 File, or Browser Webcam)
 
 ---
 
-## 4. Models Registry & Open-Source Licensing Compliance
+## 5. Models Registry & Open-Source Licensing Compliance
 
 | Pipeline Task | Primary Model | Version | Licence | Input Size | Open-Source / Permissive Alternative |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -91,7 +107,7 @@ Camera / Video Stream (RTSP Stream, Local MP4 File, or Browser Webcam)
 
 ---
 
-## 5. Webster Adaptive Traffic Signal Optimization
+## 6. Webster Adaptive Traffic Signal Optimization
 
 Signal timing calculations follow Indian Road Congress (IRC-SP-41) standards:
 - **Phase Sequence:** Lane A (North) -> Lane B (East) -> Lane C (South) -> Lane D (West).
@@ -109,7 +125,7 @@ Signal timing calculations follow Indian Road Congress (IRC-SP-41) standards:
 
 ---
 
-## 6. Privacy & Legal Compliance (India's DPDP Act 2023)
+## 7. Privacy & Legal Compliance (India's DPDP Act 2023)
 
 In accordance with India's Digital Personal Data Protection (DPDP) Act 2023:
 1. **Synthetic Public Data:** All registration plates in the live simulation are synthetic samples.
@@ -119,7 +135,7 @@ In accordance with India's Digital Personal Data Protection (DPDP) Act 2023:
 
 ---
 
-## 7. Local Development & Build Instructions
+## 8. Local Development & Build Instructions
 
 ```bash
 # 1. Install dependencies

@@ -42,6 +42,7 @@ export const TrafficCharts: React.FC<TrafficChartsProps> = ({ lanes, historyPoin
       lorry: 0,
       motorcycle: 0,
       ambulance: 0,
+      fire_engine: 0,
       vip: 0,
     };
 

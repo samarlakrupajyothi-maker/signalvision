@@ -54,66 +54,66 @@ export default function App() {
   const [pcuWeights, setPcuWeights] = useState<Record<VehicleType, number>>({ ...DEFAULT_PCU_WEIGHTS });
 
   // Emergency State
-  const [emergencyActiveLane, setEmergencyActiveLane] = useState<string | null>(null);
-  const [activeRule, setActiveRule] = useState<string>('Webster Adaptive Coordination (IRC-SP-41)');
+  const [emergencyActiveLane, setEmergencyActiveLane] = useState<{ lane: string; type: 'ambulance' | 'fire_engine' | 'vip' | 'blocked' } | null>(null);
+  const [activeRule, setActiveRule] = useState<string>('Indian LHT Rules & Webster Adaptive (IRC-SP-41)');
 
   // Selected trajectory for map
   const [activeTrajectory, setActiveTrajectory] = useState<TrajectoryPoint[]>([]);
 
-  // Initial Lane Stats
+  // Initial Lane Stats (Indian Left-Hand Traffic Approached)
   const [lanes, setLanes] = useState<LaneStats[]>([
     {
       id: 'A',
-      name: 'MG Road Northbound',
+      name: 'MG Road Northbound (Left-Hand Traffic)',
       direction: 'North',
       signal: 'GREEN',
       countdown: 24,
       queueLength: 6,
       totalPCU: 9.4,
       avgWaitSeconds: 14.2,
-      vehicleCounts: { car: 4, bus: 1, van: 0, auto: 2, lorry: 0, motorcycle: 8, ambulance: 0, vip: 0 },
+      vehicleCounts: { car: 4, bus: 1, van: 0, auto: 2, lorry: 0, motorcycle: 8, ambulance: 0, fire_engine: 0, vip: 0 },
       allocatedGreen: 24,
       flowRate: 720,
       saturationFlow: 1800,
     },
     {
       id: 'B',
-      name: 'Benz Circle Flyover Eastbound',
+      name: 'Benz Circle Flyover Eastbound (Keep Left)',
       direction: 'East',
       signal: 'RED',
       countdown: 24,
       queueLength: 11,
       totalPCU: 18.2,
       avgWaitSeconds: 32.5,
-      vehicleCounts: { car: 8, bus: 2, van: 1, auto: 4, lorry: 1, motorcycle: 12, ambulance: 0, vip: 0 },
+      vehicleCounts: { car: 8, bus: 2, van: 1, auto: 4, lorry: 1, motorcycle: 12, ambulance: 0, fire_engine: 0, vip: 0 },
       allocatedGreen: 32,
       flowRate: 1100,
       saturationFlow: 1800,
     },
     {
       id: 'C',
-      name: 'Bandar Road Southbound',
+      name: 'Bandar Road Southbound (Keep Left)',
       direction: 'South',
       signal: 'RED',
       countdown: 24,
       queueLength: 5,
       totalPCU: 8.0,
       avgWaitSeconds: 18.0,
-      vehicleCounts: { car: 3, bus: 1, van: 0, auto: 3, lorry: 0, motorcycle: 6, ambulance: 0, vip: 0 },
+      vehicleCounts: { car: 3, bus: 1, van: 0, auto: 3, lorry: 0, motorcycle: 6, ambulance: 0, fire_engine: 0, vip: 0 },
       allocatedGreen: 20,
       flowRate: 640,
       saturationFlow: 1800,
     },
     {
       id: 'D',
-      name: 'Punnami Ghat Westbound',
+      name: 'Punnami Ghat Westbound (Keep Left)',
       direction: 'West',
       signal: 'RED',
       countdown: 24,
       queueLength: 4,
       totalPCU: 6.5,
       avgWaitSeconds: 12.8,
-      vehicleCounts: { car: 2, bus: 0, van: 1, auto: 2, lorry: 0, motorcycle: 7, ambulance: 0, vip: 0 },
+      vehicleCounts: { car: 2, bus: 0, van: 1, auto: 2, lorry: 0, motorcycle: 7, ambulance: 0, fire_engine: 0, vip: 0 },
       allocatedGreen: 18,
       flowRate: 510,
       saturationFlow: 1800,
@@ -137,39 +137,67 @@ export default function App() {
     { time: '09:27', totalVehicles: 39, avgSpeed: 26, laneA: 11, laneB: 18, laneC: 6, laneD: 4 },
   ]);
 
-  // Operational Alerts
+  // Operational Alerts: Indian Traffic Violations & Priority Vehicles
   const [alerts, setAlerts] = useState<TrafficAlert[]>([
     {
       id: 'ALT-101',
-      type: 'blacklist',
+      type: 'signal_jumping',
       severity: 'critical',
-      title: 'Blacklist Interception: DL 01 AB 9942',
-      description: 'Stolen vehicle matched at Governorpet Crossing. Alert dispatched to PCR Unit.',
-      timestamp: '09:24:12',
-      cameraId: 'CAM-VIJ-08',
-      plate: 'DL 01 AB 9942',
+      title: 'Signal Jumping Violation: AP 16 EH 2004',
+      description: 'Vehicle breached stop line during red signal at Benz Circle junction.',
+      timestamp: '09:26:14',
+      cameraId: 'CAM-VIJ-01',
+      plate: 'AP 16 EH 2004',
+      mvActSection: 'MV Act Sec 119/177',
+      fineAmount: 1000,
       acknowledged: false,
     },
     {
       id: 'ALT-102',
-      type: 'route_anomaly',
-      severity: 'high',
-      title: 'Route Anomaly: TS 09 FA 1010',
-      description: 'Impossible speed 140 km/h detected between Gollapudi Bypass and Ramavarappadu Ring (cloned plate suspect).',
-      timestamp: '09:21:40',
-      cameraId: 'CAM-VIJ-03',
+      type: 'wrong_route',
+      severity: 'critical',
+      title: 'Wrong Route / Opposite Driving: TS 09 FA 1010',
+      description: 'Vehicle detected driving against oncoming traffic stream violating Indian keep-left rules.',
+      timestamp: '09:25:02',
+      cameraId: 'CAM-VIJ-04',
       plate: 'TS 09 FA 1010',
+      mvActSection: 'MV Act Sec 177/184',
+      fineAmount: 1000,
       acknowledged: false,
     },
     {
       id: 'ALT-103',
-      type: 'emergency',
-      severity: 'medium',
-      title: 'Ambulance Preemption: Lane A Cleared',
-      description: 'Emergency corridor priority cleared Lane A in 11 seconds without pedestrian disruption.',
-      timestamp: '09:18:05',
-      cameraId: 'CAM-VIJ-01',
+      type: 'overspeeding',
+      severity: 'high',
+      title: 'Speed Limit Crossed: AP 39 TK 9812',
+      description: 'Vehicle recorded at 68 km/h exceeding 40 km/h urban junction speed ceiling.',
+      timestamp: '09:23:40',
+      cameraId: 'CAM-VIJ-03',
+      plate: 'AP 39 TK 9812',
+      mvActSection: 'MV Act Sec 112/183',
+      fineAmount: 2000,
+      acknowledged: false,
+    },
+    {
+      id: 'ALT-104',
+      type: 'fire_engine',
+      severity: 'critical',
+      title: 'Fire Fighter Emergency Priority Active',
+      description: 'Fire Brigade tender en route to Governorpet. Signal preemption granted.',
+      timestamp: '09:20:15',
+      cameraId: 'CAM-VIJ-02',
       acknowledged: true,
+    },
+    {
+      id: 'ALT-105',
+      type: 'blacklist',
+      severity: 'critical',
+      title: 'Blocked / Stolen Vehicle: DL 01 AB 9942',
+      description: 'Vehicle matched on national VAHAN blacklist database (FIR #441/2024). PCR alert active.',
+      timestamp: '09:18:22',
+      cameraId: 'CAM-VIJ-08',
+      plate: 'DL 01 AB 9942',
+      acknowledged: false,
     },
   ]);
 
@@ -439,8 +467,19 @@ export default function App() {
                     laneStats={lanes}
                     onStatsUpdate={handleStatsUpdate}
                     onEventGenerated={handleEventGenerated}
+                    onAlertGenerated={(alert) => {
+                      setAlerts((prev) => [
+                        {
+                          id: `ALT-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+                          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                          acknowledged: false,
+                          ...alert,
+                        },
+                        ...prev,
+                      ]);
+                    }}
                     pcuWeights={pcuWeights}
-                    onEmergencyDetected={(lane) => setEmergencyActiveLane(lane)}
+                    onEmergencyDetected={(lane, type) => setEmergencyActiveLane({ lane, type })}
                     onEmergencyCleared={() => setEmergencyActiveLane(null)}
                   />
 

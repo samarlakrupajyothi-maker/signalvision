@@ -1,0 +1,6 @@
+{
+  "name": "Signal Vision: ANPR Trajectory and Traffic Intelligence Platform",
+  "description": "Smart India Hackathon (PS 26127 - BEL): Unified ANPR tracking, real-time Webster adaptive traffic signal optimization, cross-camera trajectory reconstruction, and live junction analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
